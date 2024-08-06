@@ -1,0 +1,4 @@
+# scraper/requirements.txt
+requests
+beautifulsoup4
+kafka-python

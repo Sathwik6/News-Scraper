@@ -1,0 +1,153 @@
+services:
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - news-scraper-network
+
+  airflow-db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${AIRFLOW_DB}
+      POSTGRES_USER: ${AIRFLOW_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_PASSWORD}
+    ports:
+      - "5434:5432"
+    networks:
+      - news-scraper-network
+
+  zookeeper:
+    image: wurstmeister/zookeeper:3.4.6
+    ports:
+      - "2181:2181"
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_PORT: 2181
+    networks:
+      - news-scraper-network
+
+  kafka:
+    image: wurstmeister/kafka:2.12-2.2.0
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    depends_on:
+      - zookeeper
+    networks:
+      - news-scraper-network
+
+  producer:
+    build:
+      context: ./kafka/producer
+      dockerfile: Dockerfile
+    environment:
+      KAFKA_BROKER: kafka:9092
+    depends_on:
+      - kafka
+    networks:
+      - news-scraper-network
+
+  scraper:
+    build:
+      context: .
+      dockerfile: scraper/Dockerfile
+    environment:
+      KAFKA_BROKER: kafka:9092
+    depends_on:
+      - kafka
+    networks:
+      - news-scraper-network
+
+  consumer:
+    build:
+      context: .
+      dockerfile: kafka/consumer/Dockerfile
+    environment:
+      KAFKA_BROKER: kafka:9092
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+    depends_on:
+      - db
+      - kafka
+    networks:
+      - news-scraper-network
+
+  airflow-init:
+    image: apache/airflow:2.5.0
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        airflow db init &&
+        airflow users create --username admin --password admin --firstname admin --lastname admin --role Admin --email admin@example.com
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: ${AIRFLOW__CORE__SQL_ALCHEMY_CONN}
+      AIRFLOW__CORE__EXECUTOR: ${AIRFLOW__CORE__EXECUTOR}
+      AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW__CORE__LOAD_EXAMPLES}
+    depends_on:
+      - airflow-db
+    networks:
+      - news-scraper-network
+
+  airflow-webserver:
+    image: apache/airflow:2.5.0
+    command: ["webserver"]
+    environment:
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=${AIRFLOW__CORE__SQL_ALCHEMY_CONN}
+      - AIRFLOW__CORE__EXECUTOR=${AIRFLOW__CORE__EXECUTOR}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=${AIRFLOW__CORE__LOAD_EXAMPLES}
+    ports:
+      - "8080:8080"
+    depends_on:
+      - airflow-db
+      - airflow-init
+    volumes:
+      - ./dags:/usr/local/airflow/dags
+    networks:
+      - news-scraper-network
+
+  airflow-scheduler:
+    image: apache/airflow:2.5.0
+    command: ["scheduler"]
+    environment:
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=${AIRFLOW__CORE__SQL_ALCHEMY_CONN}
+      - AIRFLOW__CORE__EXECUTOR=${AIRFLOW__CORE__EXECUTOR}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=${AIRFLOW__CORE__LOAD_EXAMPLES}
+    depends_on:
+      - airflow-db
+      - airflow-init
+    volumes:
+      - ./dags:/usr/local/airflow/dags
+    networks:
+      - news-scraper-network
+
+  webserver:
+    build:
+      context: .
+      dockerfile: webserver/Dockerfile
+    ports:
+      - "5001:5000"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+    depends_on:
+      - db
+    networks:
+      - news-scraper-network
+
+networks:
+  news-scraper-network:
+    driver: bridge
